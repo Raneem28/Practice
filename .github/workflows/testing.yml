@@ -149,7 +149,7 @@ jobs:
           secure: true
           username: ${{ secrets.EMAIL_USERNAME }}
           password: ${{ secrets.EMAIL_APP_PASSWORD }}
-          to: ${{ secrets.QA_EMAIL }},${{ github.event.pull_request.user.login }}@${{ secrets.EMAIL_DOMAIN }}
+          to: ${{ secrets.QA_EMAIL }},${{ secrets.DEVELOPER_EMAIL }}
           from: CS316 CI/CD Pipeline <${{ secrets.EMAIL_USERNAME }}>
           subject: "❌ [Testing] Workflow Failed — PR #${{ github.event.pull_request.number }}"
           body: |
