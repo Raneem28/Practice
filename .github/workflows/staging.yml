@@ -1,0 +1,175 @@
+name: Deploy to Staging (Push to Main)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Manual trigger button
+
+jobs:
+  build-test-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ─────────────────────────────────────────
+      # 1. CHECKOUT CODE
+      # ─────────────────────────────────────────
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ─────────────────────────────────────────
+      # 2. SET UP NODE.JS
+      # ─────────────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            client/package-lock.json
+            server/package-lock.json
+
+      # ─────────────────────────────────────────
+      # 3. BUILD — Install dependencies & build frontend
+      # ─────────────────────────────────────────
+      - name: Install Server Dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Install Client Dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Build Frontend
+        working-directory: client
+        run: npm run build
+        env:
+          VITE_API_URL: http://${{ secrets.STAGING_SERVER_IP }}:5000
+
+      # ─────────────────────────────────────────
+      # 4. UNIT TESTS
+      # ─────────────────────────────────────────
+      - name: Run Server Unit Tests
+        working-directory: server
+        run: npm test
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI_STAGING }}
+          NODE_ENV: test
+
+      - name: Run Client Unit Tests
+        working-directory: client
+        run: npm test -- --run
+
+      # ─────────────────────────────────────────
+      # 5. LINTING / CODE ANALYSIS
+      # ─────────────────────────────────────────
+      - name: Lint Server Code
+        working-directory: server
+        run: npm run lint
+
+      - name: Lint Client Code
+        working-directory: client
+        run: npm run lint
+
+      # ─────────────────────────────────────────
+      # 6. DEPLOY TO STAGING EC2 (SSH + git pull)
+      # ─────────────────────────────────────────
+      - name: Deploy to Staging Server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.STAGING_SERVER_IP }}
+          username: ubuntu
+          key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          script: |
+            # Pull latest code
+            cd /home/ubuntu/app
+            git pull origin main
+
+            # Restart backend
+            cd server
+            npm ci --omit=dev
+            pm2 restart todo-server || pm2 start index.js --name todo-server
+            pm2 save
+
+            # Rebuild and serve frontend
+            cd ../client
+            npm ci
+            npm run build
+            pm2 restart todo-client || pm2 serve dist 3000 --name todo-client --spa
+            pm2 save
+
+      # ─────────────────────────────────────────
+      # 7a. EMAIL — Notify team on success
+      # ─────────────────────────────────────────
+      - name: Send Success Email
+        if: success()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_APP_PASSWORD }}
+          to: ${{ secrets.QA_EMAIL }}
+          from: CS316 CI/CD Pipeline <${{ secrets.EMAIL_USERNAME }}>
+          subject: "✅ [Staging] Deployment Successful — ${{ github.sha }}"
+          body: |
+            Hello Team,
+
+            The latest changes have been successfully deployed to the Staging environment.
+
+            ─────────────────────────────────────
+            Commit Details
+            ─────────────────────────────────────
+            Commit    : ${{ github.sha }}
+            Author    : ${{ github.actor }}
+            Message   : ${{ github.event.head_commit.message }}
+            Branch    : main
+
+            ─────────────────────────────────────
+            Access the Staging App
+            ─────────────────────────────────────
+            Frontend  : http://${{ secrets.STAGING_SERVER_IP }}:3000
+            Backend   : http://${{ secrets.STAGING_SERVER_IP }}:5000
+
+            All users can now access and review the application on staging.
+
+            Regards,
+            CS316 DevOps Pipeline
+
+      # ─────────────────────────────────────────
+      # 7b. EMAIL — Notify developer + QA on failure
+      # ─────────────────────────────────────────
+      - name: Send Failure Email
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_APP_PASSWORD }}
+          to: ${{ secrets.QA_EMAIL }}
+          from: CS316 CI/CD Pipeline <${{ secrets.EMAIL_USERNAME }}>
+          subject: "❌ [Staging] Workflow Failed — ${{ github.sha }}"
+          body: |
+            Hello,
+
+            The CI/CD workflow for the staging deployment has FAILED.
+
+            ─────────────────────────────────────
+            Commit Details
+            ─────────────────────────────────────
+            Commit    : ${{ github.sha }}
+            Author    : ${{ github.actor }}
+            Message   : ${{ github.event.head_commit.message }}
+            Branch    : main
+
+            ─────────────────────────────────────
+            View Workflow Logs
+            ─────────────────────────────────────
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Please investigate and fix the issue immediately.
+
+            Regards,
+            CS316 DevOps Pipeline
